@@ -1,0 +1,5 @@
+---
+triple:          'arm64-apple-darwin'
+binary-path:     '/Users/oh26140/Desktop/projects/audio/output'
+relocations:     []
+...
