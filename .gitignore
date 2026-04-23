@@ -16,3 +16,5 @@ main
 .vscode/
 
 zaudio/
+lib/
+include/
