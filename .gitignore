@@ -14,3 +14,5 @@ main
 
 # Ignore IDE-specific folders
 .vscode/
+
+zaudio/*
