@@ -1,1 +1,6 @@
 zaudio/*
+lib/*
+include/*
+.vscode/
+main.dSYM
+output.dSYM
