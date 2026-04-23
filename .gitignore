@@ -1,6 +1,16 @@
-zaudio/*
-lib/*
-include/*
+# Ignore the actual compiled programs
+main
+
+# Ignore all object files and libraries
+*.o
+*.a
+*.so
+*.dll
+*.exe
+
+# Ignore OS-specific junk and debug symbols
+.DS_Store
+*.dSYM/
+
+# Ignore IDE-specific folders
 .vscode/
-main.dSYM
-output.dSYM
