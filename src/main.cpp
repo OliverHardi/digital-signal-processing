@@ -5,10 +5,14 @@
 #include <atomic>
 #include <cmath>
 #include <chrono>
-
+#include <algorithm>
 
 #define MINIAUDIO_IMPLEMENTATION
 #include "miniaudio.h"
+
+#include "raylib.h"
+
+constexpr const char* AUDIO_PATH = "zaudio/ketamina.wav";
 
 constexpr int SAMPLE_RATE = 44100;
 constexpr int CHANNELS = 1;
@@ -16,6 +20,10 @@ constexpr ma_format FORMAT = ma_format_f32;
 
 constexpr int WINDOW_SIZE = 1 << 10; // 2^10=1024
 constexpr int HOP_SIZE = WINDOW_SIZE / 2;
+
+constexpr int RING_BUFFER_SIZE = std::max(WINDOW_SIZE * 3, 1024);
+
+constexpr int NUM_TONES = std::min(HOP_SIZE, 10);
 
 std::atomic<bool> keepRunning{true};
 
@@ -26,6 +34,9 @@ struct Tone{
     float amplitude;
     float phase;
 };
+
+std::vector<Tone> g_visualBuffers[2]; 
+std::atomic<int> g_latestBufferIdx{0};
 
 void loadWav(const char* filename, std::vector<float>& data) {
     ma_decoder decoder;
@@ -93,7 +104,7 @@ std::vector<Tone> generateTones(std::vector<std::complex<float>> dftResult) {
 
     int N = dftResult.size();
 
-    for(int k = 0; k < N / 2; ++k) {
+    for(int k = 0; k < N / 2; ++k) { // hermitian symmetry
         Tone t;
         t.frequency = k * SAMPLE_RATE / N;
         t.amplitude = std::abs(dftResult[k]) / N;
@@ -103,10 +114,26 @@ std::vector<Tone> generateTones(std::vector<std::complex<float>> dftResult) {
     return tones;
 }
 
+void sortTones(std::vector<Tone>& tones){
+    std::sort(tones.begin(), tones.end(), [](const Tone& a, const Tone& b) {
+        return a.amplitude > b.amplitude; 
+    });
+}
+
+// void synthesizeTones(const std::vector<Tone>& tones, std::vector<std::complex<float>>& buffer) {
+//     int N = buffer.size();
+//     for (size_t i = 0; i < NUM_TONES; ++i) {
+//         Tone t = tones[i];
+//         for (int n = 0; n < N; ++n) {
+//             float t = 2.0f * M_PI * (float)n * t.frequency / SAMPLE_RATE + t.phase;
+//         }
+//     }
+// }
+
 void generatorThread() {
 
     std::vector<float> audioSamples;
-    loadWav("zaudio/eyesight.wav", audioSamples);
+    loadWav(AUDIO_PATH, audioSamples);
 
     void* pWriteBuffer;
 
@@ -119,9 +146,12 @@ void generatorThread() {
         hannWindow[i] = 0.5f * (1.0f - std::cos(2.0f * M_PI * i / WINDOW_SIZE));
     }
 
-    // std::vector<std::complex<float>> dftResult(WINDOW_SIZE);
     std::vector<std::complex<float>> buffer(WINDOW_SIZE);
+    std::vector<std::complex<float>> outputBuffer(WINDOW_SIZE);
     std::vector<Tone> tones(WINDOW_SIZE);
+
+    g_visualBuffers[0].resize(WINDOW_SIZE / 2);
+    g_visualBuffers[1].resize(WINDOW_SIZE / 2);
     
     while(keepRunning){
 
@@ -157,44 +187,44 @@ void generatorThread() {
 
                 auto a = std::chrono::high_resolution_clock::now();
 
+            // fft
             fft(buffer);
 
                 auto b = std::chrono::high_resolution_clock::now();
-
+            
+            // tones
             tones = generateTones(buffer);
+            sortTones(tones);
+            int backBufferIdx = 1 - g_latestBufferIdx.load(std::memory_order_relaxed);
+            g_visualBuffers[backBufferIdx] = tones;
+            g_latestBufferIdx.store(backBufferIdx, std::memory_order_release);
 
                 auto c = std::chrono::high_resolution_clock::now();
-
+            
+            // ifft
             ifft(buffer);
+
+            // instead of running the ifft on the buffer, try synthesizing using the array of tones instead
+            // synthesizeTones(tones, outputBuffer);
+
 
                 auto d = std::chrono::high_resolution_clock::now();
 
-
+            // update buffer
             for (int i = 0; i < WINDOW_SIZE; ++i) {
                 audioBuffer[HOP_SIZE + i] += buffer[i].real();
             }
 
-            // temp fill in with sin wave
-            // for (int i = 0; i < WINDOW_SIZE; ++i) {
-            //     audioBuffer[HOP_SIZE + i] += 0.5f * std::sin(2.0f * M_PI * 440.0f * (i) / SAMPLE_RATE) * hannWindow[i];
-            // }
+            // std::cout <<
+            //     " | DFT time: " << std::chrono::duration_cast<std::chrono::microseconds>(b - a).count() * 0.001 << " ms" <<
+            //     " | Tone time: " << std::chrono::duration_cast<std::chrono::microseconds>(c - b).count() * 0.001 << " ms" <<
+            //     " | IDFT time: " << std::chrono::duration_cast<std::chrono::microseconds>(d - c).count() * 0.001 << " ms" <<
+            // std::endl;
 
-            std::cout <<
-                " | DFT time: " << std::chrono::duration_cast<std::chrono::microseconds>(b - a).count() * 0.001 << " ms" <<
-                " | Tone time: " << std::chrono::duration_cast<std::chrono::microseconds>(c - b).count() * 0.001 << " ms" <<
-                " | IDFT time: " << std::chrono::duration_cast<std::chrono::microseconds>(d - c).count() * 0.001 << " ms" <<
-            std::endl;
-            
-            // increase buffer size - done
-            // preallocate vectors  - done  
-            // n/2 dft size
-            // sin/cos twiddle factors
-
-
-            
-            
-            
             index += HOP_SIZE;
+            if(index + WINDOW_SIZE + HOP_SIZE > audioSamples.size()){
+                index = 0;
+            }
 
         } else {
             ma_pcm_rb_commit_write(&g_rb, 0);
@@ -204,6 +234,7 @@ void generatorThread() {
     }
 }
 
+// jemini <3
 void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
     ma_uint32 framesTotalRead = 0;
     ma_uint32 bytesPerFrame = ma_get_bytes_per_frame(pDevice->playback.format, pDevice->playback.channels);
@@ -234,10 +265,12 @@ void data_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uin
 }
 
 
-
 int main() {
+    SetTraceLogLevel(LOG_NONE);
+    InitWindow(800, 600, "dsp");
+    SetTargetFPS(60);
 
-    if (ma_pcm_rb_init(FORMAT, CHANNELS, 16384, nullptr, nullptr, &g_rb) != MA_SUCCESS) {
+    if (ma_pcm_rb_init(FORMAT, CHANNELS, RING_BUFFER_SIZE, nullptr, nullptr, &g_rb) != MA_SUCCESS) {
         std::cout << "Failed to initialize ring buffer." << std::endl;
         return -1;
     }
@@ -257,15 +290,44 @@ int main() {
 
     std::thread genThread(generatorThread);
 
-    std::cout << "Pre-rolling buffer..." << std::endl;
-    while(ma_pcm_rb_available_read(&g_rb) < 8192) {
+    std::cout << "Pre-rolling buffer..." << std::endl; // remove ts
+    while(ma_pcm_rb_available_read(&g_rb) < RING_BUFFER_SIZE) {
         ma_sleep(10); 
     }
 
     ma_device_start(&device);
 
-    std::cout << "enter to exit" << std::endl;
-    getchar();
+    Color bgcol = { 13, 14, 18, 255 };
+    while(!WindowShouldClose()){
+
+        int readIdx = g_latestBufferIdx.load(std::memory_order_acquire);
+        const auto& tones = g_visualBuffers[readIdx];
+
+        std::vector<float> drawBuffer(800, 0.0f);
+        for(int i = 0; i < drawBuffer.size(); i++){
+            for(int k = 0; k < NUM_TONES; k++){
+                Tone t = tones.at(k);
+                float n = i/((float)drawBuffer.size()) * t.frequency * 2.0f * M_PI * (WINDOW_SIZE * 1e-5f * 2.25f);
+                float amplitude = std::log10(t.amplitude + 1.0f) * 4.0f;
+                float sample = amplitude * sinf((float)t.phase + n);
+                drawBuffer[i] += sample;
+            }
+        }
+        BeginDrawing();
+        ClearBackground(bgcol);
+        
+        for(int i = 0; i < drawBuffer.size()-1; i++){
+            float a = drawBuffer[i] * 200.0f;
+            float b = drawBuffer[i+1] * 200.0f;
+            float xScale = ((float)GetScreenWidth()) / drawBuffer.size();
+            DrawLine(i * xScale, 300 + a, (i+1) * xScale, 300 + b, GREEN);
+        }
+
+        // DrawFPS(10, 770);
+
+        EndDrawing();
+
+    }
 
     keepRunning = false;
     genThread.join(); 
