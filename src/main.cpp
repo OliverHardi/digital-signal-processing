@@ -11,7 +11,7 @@
 #include "miniaudio.h"
 #include "raylib.h"
 
-constexpr const char* AUDIO_PATH = "zaudio/ping_pong.wav";
+constexpr const char* AUDIO_PATH = "zaudio/halo.wav";
 
 constexpr int SAMPLE_RATE = 44100;
 constexpr int CHANNELS = 1;
@@ -27,6 +27,7 @@ std::atomic<bool> keepRunning{true};
 std::atomic<int> g_numTones{HOP_SIZE};
 std::atomic<float> g_playhead{0.0f};
 std::atomic<float> g_seekRequest{-1.0f}; // < 0 means no seek
+std::atomic<bool> g_pause{false};
 
 ma_pcm_rb g_rb; // global ring buffer
 
@@ -139,6 +140,8 @@ void synthesizeTones(const std::vector<Tone>& tones, std::vector<std::complex<fl
     }
 }
 
+
+
 void generatorThread() {
 
     std::vector<float> audioSamples;
@@ -211,35 +214,44 @@ void generatorThread() {
             
             // tones
             tones = generateTones(buffer);
+
+                auto c = std::chrono::high_resolution_clock::now();
+
             sortTones(tones);
+
+            
             int backBufferIdx = 1 - g_latestBufferIdx.load(std::memory_order_relaxed);
             g_visualBuffers[backBufferIdx] = tones;
             g_latestBufferIdx.store(backBufferIdx, std::memory_order_release);
 
-                auto c = std::chrono::high_resolution_clock::now();
+                auto d = std::chrono::high_resolution_clock::now();
             
-            // ifft
             // ifft(buffer); // ifft -> faster but less control
 
             // instead of running the ifft on the buffer, try synthesizing using the array of tones instead
             synthesizeTones(tones, buffer);
 
-                auto d = std::chrono::high_resolution_clock::now();
+                auto e = std::chrono::high_resolution_clock::now();
 
             // update buffer
             for (int i = 0; i < WINDOW_SIZE; ++i) {
                 audioBuffer[HOP_SIZE + i] += buffer[i].real() * hannWindow[i];
             }
 
-            std::cout <<
-                " | DFT time: " << std::chrono::duration_cast<std::chrono::microseconds>(b - a).count() * 0.001 << " ms" <<
-                " | Tone time: " << std::chrono::duration_cast<std::chrono::microseconds>(c - b).count() * 0.001 << " ms" <<
-                " | IDFT time: " << std::chrono::duration_cast<std::chrono::microseconds>(d - c).count() * 0.001 << " ms" <<
-            std::endl;
+            // std::cout <<
+            //     " | FFT: " << std::chrono::duration_cast<std::chrono::microseconds>(b - a).count() * 0.001 << " ms" <<
+            //     " | Tone: " << std::chrono::duration_cast<std::chrono::microseconds>(c - b).count() * 0.001 << " ms" <<
+            //     " | Sort: " << std::chrono::duration_cast<std::chrono::microseconds>(d - c).count() * 0.001 << " ms" <<
+            //     " | Synthesis: " << std::chrono::duration_cast<std::chrono::microseconds>(e - d).count() * 0.001 << " ms" <<
+            //     " | Total: " << std::chrono::duration_cast<std::chrono::microseconds>(e - a).count() * 0.001 << " ms" <<
+            //     " | Target: " << HOP_SIZE * 1000.0f / SAMPLE_RATE << " ms" <<
+            // std::endl;
 
-            index += HOP_SIZE;
-            if(index + WINDOW_SIZE + HOP_SIZE > audioSamples.size()){
-                index = 0;
+            if(!g_pause.load()) {
+                index += HOP_SIZE;
+                if(index + WINDOW_SIZE + HOP_SIZE > audioSamples.size()){
+                    index = 0;
+                }
             }
 
         } else {
@@ -319,7 +331,7 @@ int main() {
         std::vector<float> drawBuffer(800, 0.0f);
         for(int i = 0; i < drawBuffer.size(); i++){
             for(int k = 0; k < g_numTones; k++){
-                Tone t = tones.at(k);
+                Tone t = tones[k];
                 float n = i/((float)drawBuffer.size()) * t.frequency * 2.0f * M_PI * (WINDOW_SIZE * 1e-5f * 2.25f);
                 float amplitude = std::log10(t.amplitude + 1.0f) * 4.0f;
                 float sample = amplitude * sinf((float)t.phase + n);
@@ -349,6 +361,11 @@ int main() {
             g_numTones.store((int)(t * (HOP_SIZE-1)) + 1); // max hop size tones (nyquist)
         }
 
+        // toggle pause on space bar
+        if (IsKeyPressed(KEY_SPACE)) {
+            g_pause.store(!g_pause.load());
+        }
+
         BeginDrawing();
         ClearBackground(bgcol);
 
@@ -359,7 +376,7 @@ int main() {
         // tone slider
         DrawRectangleRec(sliderBounds, DARKGRAY);
         DrawRectangle(sliderBounds.x, sliderBounds.y, sliderBounds.width * pow((g_numTones.load()-1) / (float)HOP_SIZE, 1.0f/1.5f), sliderBounds.height, WHITE);
-        DrawText(TextFormat("Tones: %d", g_numTones.load()), sliderBounds.x, sliderBounds.y - 25, 20, WHITE);
+        DrawText(TextFormat("tones: %d", g_numTones.load()), sliderBounds.x, sliderBounds.y - 25, 20, WHITE);
 
         // waveform
         for(int i = 0; i < drawBuffer.size()-1; i++){
